@@ -3,32 +3,27 @@ from datetime import datetime
 from pathlib import Path
 from xml.etree import ElementTree
 
+from core import _reduce
+
 PATHS = {
     'invoice': {
-        'miso': {
-            'net_rev': 'Header/[Page_Num="1"]/Tot_Net_Chg_Rev_Amt',
-            'end_date': 'Header/[Page_Num="1"]/Billing_Prd_End_Dte',
-            'fund': 'Header/[Page_Num="1"]/Mrkt_Participant_NmAddr',
-            'delta': 7
-        },
-        'pjm': {
-            'net_rev': 'ROWSET/ROW/TOTAL_DUE_RECEIVABLE',
-            'end_date': 'HEADER/BILLING_PERIOD_END_DATE',
-            'fund': 'HEADER/CUSTOMER_ACCOUNT',
-            'delta': 0
-        }
+        'net_rev': 'Header/[Page_Num="1"]/Tot_Net_Chg_Rev_Amt',
+        'end_date': 'Header/[Page_Num="1"]/Billing_Prd_End_Dte',
+        'fund': 'Header/[Page_Num="1"]/Mrkt_Participant_NmAddr',
+        'delta': 7
     },
-    'settlement': {
-        'summary': {
+    'summary': {
 
-        }
+    },
+    'ftr': {
+
     }
 }
 
 class ParsedXML:
-    def __init__(self, file: Path, parsetype: str, doctype: str):
+    def __init__(self, file: Path, doctype: str):
         self.file = file
-        paths = PATHS[parsetype][doctype]
+        paths = PATHS[_reduce(doctype)]
 
         self.root = ElementTree.parse(self.file).getroot()
 
