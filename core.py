@@ -21,7 +21,7 @@ Configuration.
 """
 
 SCRIPT_DESC = "Takes a collection of invoices and sends to .xlsx"
-SCRIPT_USAGE = "xl-parse.py [-h] <invoice|settlement> --output=DIR --input=DIR --template=FILE --doctype=<{ca,mkt}|{summary,ftr}> \n"
+SCRIPT_USAGE = "xl-parse.py [-h] <invoice|settlement> --output=DIR --input=DIR --template=FILE --doctype=<{ca,mkt}|{ao,ftr}> \n"
 
 TO_EMAIL = 'venkat@oncept.net'
 FROM_EMAIL = 'Me_watch@oncept.net'
@@ -46,13 +46,13 @@ def parse_args() -> Namespace:
     # parser.add_argument('--market', choices=['miso', 'pjm'], default='miso', help="market of document")
 
     invoice.add_argument('--doctype', choices=['ca', 'mkt'], required=True, help="type of document")
-    settlement.add_argument('--doctype', choices=['summary', 'ftr'], required=True, help="type of document")
+    settlement.add_argument('--doctype', choices=['ao', 'ftr'], required=True, help="type of document")
 
     return parser.parse_args()
 
-def reduce(doctype: str, summary: Any = 'summary', ftr: Any = 'ftr', invoice: Any = 'invoice') -> Any:
-    if doctype == 'summary':
-        return summary
+def reduce(doctype: str, ao: Any = 'ao', ftr: Any = 'ftr', invoice: Any = 'invoice') -> Any:
+    if doctype == 'ao':
+        return ao
     elif doctype == 'ftr':
         return ftr
     elif doctype in ['ca', 'mkt']:
@@ -66,10 +66,10 @@ def load_template(template: Path, key: str) -> dict:
     return template
 
 def get_toname(doctype: str, output: Path) -> Callable[[int, str], Path]:
-    summary = lambda year, fund: output / fund + ' Summary ' + str(year) + '.xlsx'
+    ao = lambda year, fund: output / fund + ' AO ' + str(year) + '.xlsx'
     ftr = lambda year, fund: output / fund + ' FTR ' + str(year) + '.xlsx'
     invoice = lambda year, _: output / str(year) + '.xlsx'
-    return reduce(doctype, summary, ftr, invoice)
+    return reduce(doctype, ao, ftr, invoice)
 
 
 """
@@ -101,7 +101,7 @@ class ParsedXML:
             'fund': 'Header/[Page_Num="1"]/Mrkt_Participant_NmAddr',
             'delta': 7
         },
-        'summary': {
+        'ao': {
 
         },
         'ftr': {
@@ -211,7 +211,7 @@ class InvoiceHandler(SheetHandler):
             self._set_month(last_month)
             self._fill_column(row, 8, file.date, file.net_rev)
 
-class Summary(SheetHandler):
+class AO(SheetHandler):
     def trade_results(self, day: int) -> float:
         ahead_energy_amt = self.worksheet.cell(row=3, column=day+1)
         real_energy_amt = self.worksheet.cell(row=4, column=day+1)
@@ -236,7 +236,7 @@ class HandlerRotater:
     def __init__(self, root: Path, template: Path, doctype: str) -> None:
         self.to_name = get_toname(doctype, root)
         self.template = load_template(template, reduce(doctype))
-        self.type = reduce(doctype, Summary, FTR, InvoiceHandler)
+        self.type = reduce(doctype, AO, FTR, InvoiceHandler)
 
         self.handlers = {}
 
