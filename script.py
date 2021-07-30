@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 
-import core
-from excel import HandlerRotater
-from parsers import ParsedXML
+from core import HandlerRotater, ParsedXML
+from core import parse_args
 
-args = core.parse_args()
-template = core.load_template(args.template, args.parsetype, args.doctype)
-rotator = HandlerRotater(args.output, template, args.doctype)
+args = parse_args()
 
-files = [ParsedXML(file, args.doctype) for file in list(args.input.glob('*.xml'))]
+rotator = HandlerRotater(args.output, args.template, args.doctype)
+files = ParsedXML.from_list(list(args.input.glob('*.xml')), args.doctype)
 
 for file in files:
     for year in file.years:
