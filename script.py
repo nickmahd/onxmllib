@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-from core import HandlerRotater, ParsedXML
-from core import parse_args
+from excel import SheetHandler, parse_args
+from parsers import ParsedXML
 
 args = parse_args()
 
-rotator = HandlerRotater(args.output, args.template, args.doctype)
+rotator = SheetHandler.get_handler(args.parsetype, args.output, args.template)
 files = ParsedXML.from_list(list(args.input.glob('*.xml')), args.doctype)
 
 for file in files:
