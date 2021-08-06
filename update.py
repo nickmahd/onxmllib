@@ -9,7 +9,7 @@ t = {
         'pjm': load_workbook('invoice.xlsx')['pjm']},
     'settlement': {
         'summary': load_workbook('ao.xlsx').active,
-        'ftr': load_workbook('FTR_template.xlsx').active
+        'ftr': load_workbook('ftr.xlsx').active
     }
 }
 with open('template.pkl', 'wb') as f: dump(t, f)
