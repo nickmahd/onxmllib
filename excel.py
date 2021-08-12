@@ -41,7 +41,8 @@ from openpyxl.cell.cell import Cell
 from openpyxl.formula.translate import Translator
 from openpyxl.worksheet.worksheet import Worksheet
 
-from parsers import Invoice, MISOInvoice, MISOSettlement, Settlement
+from parsers import (Invoice, MISOInvoice, PJMInvoice,
+                     Settlement, MISOSettlement)
 
 
 S = TypeVar(name='S', bound='SheetHandler')
@@ -55,8 +56,8 @@ class SheetHandler(ABC):
     This class dictates the structure of all SheetHandlers using abstract
     functions, and defines multiple shared helper functions.
 
-    It also lays the groundwork for the file-sheet interface formalized
-    in its subclasses.
+    It also lays the groundwork for the file-sheet interface formalized in
+    its subclasses.
     """
     def __init__(self, path: Path, templates: Dict[str, Worksheet]) -> None:
         self.path = path
@@ -120,6 +121,7 @@ class SheetHandler(ABC):
             finally:
                 self.modified[path] = wb
         self.workbook = self.modified[path]
+        self.worksheet = None
 
     def _set_sheet(self, sheet_name: str) -> bool:
         """
@@ -127,12 +129,7 @@ class SheetHandler(ABC):
 
         Creates a new worksheet if it doesn't exist.
         """
-        CONDITIONS = (
-            self.worksheet,
-            self.worksheet.parent == self.workbook,
-            self.worksheet.title == sheet_name
-        )
-        if not all(CONDITIONS):
+        if not (self.worksheet and self.worksheet.title == sheet_name):
             try:
                 self.worksheet = self.workbook[sheet_name]
             except KeyError:
@@ -202,7 +199,11 @@ class SheetHandler(ABC):
         pass
 
     @abstractmethod
-    def process_dir(self) -> None:
+    def _fill_column(self) -> None:
+        pass
+
+    @abstractmethod
+    def process_dir(self, input, market, move) -> None:
         pass
 
 class InvoiceHandler(SheetHandler):
@@ -210,22 +211,22 @@ class InvoiceHandler(SheetHandler):
     Implementation of SheetHandler for invoice files.
     """
     @staticmethod
-    def _date_to_col(date: datetime, market: str) -> int:
+    def _date_to_col(date: datetime) -> int:
         """
         Invoices are received at weekly intervals; convert a datetime into
         the proper column number based on market specifics.
 
-        MISO sends an invoice on the last day of the month, which requires
-        an extra column.
-
-        TODO: Implement pjm date_to_col 
+        An invoice is sent on the last day of the month, which requires an
+        extra column.
         """
-        if market == 'miso':
-            week = (date.day - 1) // 7
-            col = week + 2
-            if date.month != (date + relativedelta(days=1)).month:
-                col += 1  # Extra column for the last (incomplete) week
+        week = (date.day - 1) // 7
+        col = week + 2
+        if date.month != (date + relativedelta(days=1)).month:
+            col += 1  # Extra column for the last (incomplete) week
         return col
+
+    def _get_template(self, market: str) -> Worksheet:
+        return self.templates[market]
 
     def _get_month_row(self, date: datetime) -> Optional[int]:
         """
@@ -236,64 +237,80 @@ class InvoiceHandler(SheetHandler):
         row = self._search(month, 2)
         return row
 
-    def _paste(self, date: datetime, market: str) -> int:
+    def _paste(self, date: datetime, template: Worksheet) -> int:
         """
         Create a new section with the given month name below the lowest entry.
 
         XXX: doesn't automatically sort jan-dec
         """
         row = self.worksheet.max_row + int(self.worksheet.max_row > 1)
-        self._fill_template(row, self.templates[market])
+        self._fill_template(row, template)
         self.worksheet.cell(row, 2).value = date.strftime('%B')
         return row
 
-    def _fill_miso_column(self, head: int, col: int,
-                          invoice: MISOInvoice) -> None:
+    def _fill_column(self, head: int, col: int,
+                     invoice: Invoice, market: str) -> None:
         """
-        Given a MISOInvoice, fills the revenue, date and fees respectively.
+        Given an Invoice, fills the revenue, date and fees respectively.
+        """
+        if market == 'miso':
+            self._set_cell(head+2, col, invoice.revenue)
+            self._set_cell(head+4, col, invoice.date)
+            self._set_cell(head+5, col, invoice.fees)
+        elif market == 'pjm':
+            pass
 
-        TODO: Implement _fill_pjm_column
-        """
-        self._set_cell(head+2, col, invoice.revenue)
-        self._set_cell(head+4, col, invoice.date)
-        self._set_cell(head+5, col, invoice.fees)
 
-    def fill_miso(self, invoice: MISOInvoice) -> None:
+
+    def fill(self, invoice: Invoice, market: str) -> None:
         """
-        Given a MISOInvoice, fills the information for the given week in the
+        Given a Invoice, fills the information for the given week in the
         correct spreadsheet, worksheet, row and column.
 
-        TODO: Implement fill_pjm
+        MISO splits the last week of the month, so the last week of each month
+        is also added to the last column of the prior month.
         """
-        for year in self._get_adjacent_years(invoice.date):
-            self._set_workbook(f'{year}.xlsx')
-            self._set_sheet(invoice.fund)
+        if market == 'miso':
+            for year in self._get_adjacent_years(invoice.date):
+                self._set_workbook(f'{year}.xlsx')
+                self._set_sheet(invoice.fund)
 
-            row = self._get_month_row(invoice.date)
-            col = self._date_to_col(invoice.date)
-            if not row:
-                self._paste(invoice.date, 'miso')
+                row = self._get_month_row(invoice.date)
+                col = self._date_to_col(invoice.date)
+                if not row:
+                    row = self._paste(invoice.date, self._get_template(market))
 
-            self._fill_miso_column(row, col, invoice)
+                self._fill_miso_column(row, col, invoice, market)
 
-            last_month = invoice.date - relativedelta(months=1)
-            prev_row = self._get_month_row(last_month)
-            if col == 2 and prev_row:
-                self._fill_miso_column(prev_row, col, invoice)
+                last_month = invoice.date - relativedelta(months=1)
+                prev_row = self._get_month_row(last_month)
+                if col == 2 and prev_row:
+                    """If the invoice is the first week of the month, fill it in
+                    the previous month (if an entry exists)."""
+                    self._fill_miso_column(prev_row, col, invoice, market)
+
+        elif market == 'pjm':
+            for year in self._get_adjacent_years(invoice.date):
+                self._set_workbook(f'{year}.xlsx')
+                self._set_sheet(invoice.fund)
+
+                row = self._get_month_row(invoice.date)
+                col = self._date_to_col(invoice.date)
+                if not row:
+                    row = self._paste(invoice.date, self._get_template(market))
+                    for i, file in enumerate(invoice.names, start=3):
+                        self._set_cell(row+i, col, file.)
+
+                self._fill_pjm_column(row, col, invoice, market)
 
     def process_dir(self, input: Path, market: str, move=False) -> None:
         """
         Given an input directory, process its files into Invoices, and then
         iteratively fill each one.
-
-        TODO: implement PJMInvoice
         """
         files = Invoice.from_dir(input, market, move)
-        if market == 'miso':
-            for file in files:
-                self.fill_miso(file)
-        elif market == 'pjm':
-            pass
+        for file in files:
+            self.fill(file, market)
 
 class SettlementHandler(SheetHandler):
     @staticmethod

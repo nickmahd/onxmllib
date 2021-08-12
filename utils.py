@@ -18,7 +18,7 @@ def parse_args() -> Namespace:
     parser.add_argument('--input', default='.', metavar="DIR", type=Path, help="input directory")
     parser.add_argument('--template', default='template.pkl', metavar="FILE", type=Path, help="template file (preformatted)")
     parser.add_argument('--market', choices=['miso', 'pjm'], default='miso', help="market of document")
-    parser.add_argument('--dryrun', action='store_true', help="whether to move files")
+    parser.add_argument('--dryrun', action='store_false', help="whether to move files")
     # parser.add_argument('--log', const=".", metavar="DIR", nargs='?', type=Path, help="send a log to directory")
 
     return parser.parse_args()

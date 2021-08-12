@@ -5,6 +5,12 @@ from utils import parse_args
 
 args = parse_args()
 
-handler = SheetHandler.get_handler(args.parsetype, args.output, args.template)
-handler.process_dir(args.input, args.market)
+handler = SheetHandler.get_handler(parsetype=args.parsetype,
+                                   path=args.output,
+                                   template=args.template)
+
+handler.process_dir(input=args.input,
+                    market=args.market,
+                    move=args.dryrun)
+
 handler.write()
