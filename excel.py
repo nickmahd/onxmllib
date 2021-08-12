@@ -258,9 +258,9 @@ class InvoiceHandler(SheetHandler):
             self._set_cell(head+4, col, invoice.date)
             self._set_cell(head+5, col, invoice.fees)
         elif market == 'pjm':
-            pass
-
-
+            self._set_cell(head+2, col, invoice.date)
+            for i, amt in enumerate(invoice.amts, start=3):
+                self._set_cell(head+i, col, amt)
 
     def fill(self, invoice: Invoice, market: str) -> None:
         """
@@ -298,8 +298,8 @@ class InvoiceHandler(SheetHandler):
                 col = self._date_to_col(invoice.date)
                 if not row:
                     row = self._paste(invoice.date, self._get_template(market))
-                    for i, file in enumerate(invoice.names, start=3):
-                        self._set_cell(row+i, col, file.)
+                    for i, name in enumerate(invoice.names, start=3):
+                        self._set_cell(row+i, col, name)
 
                 self._fill_pjm_column(row, col, invoice, market)
 

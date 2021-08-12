@@ -4,7 +4,7 @@ import re
 from abc import ABC, abstractmethod, abstractstaticmethod
 from datetime import datetime
 from pathlib import Path
-from typing import List, Tuple, TypeVar
+from typing import Iterable, List, Tuple, TypeVar
 from xml.etree import ElementTree
 from zipfile import ZipFile
 
@@ -56,7 +56,7 @@ class MISOInvoice(Invoice):
         self.fees = float(ca_amt.replace(',', ''))
 
     @staticmethod
-    def _from_list(files: List[tuple]) -> List:
+    def _from_list(files: List[Iterable]) -> List:
         return [MISOInvoice(*pair) for pair in files]
 
     @staticmethod
@@ -64,9 +64,16 @@ class MISOInvoice(Invoice):
         MKT_DIR = list((base / 'MKT').glob('*'))
         CA_DIR = list((base / 'CA').glob('*'))
 
-        mkt_matches = [file for file in MKT_DIR if re.match('^.+?_MKT_.+?\.xml$', file.name)]
-        file_ids = [re.findall('^.+?_(.+?)_MKT_(.+?)\.xml$', file.name)[0] for file in mkt_matches]
-        ca_matches = [file for fund, id in file_ids for file in CA_DIR if re.match(f'^.+?_{fund}_CA_{int(id)+1}\.xml$', file.name)]
+        mkt_matches = [file for file in MKT_DIR
+                       if re.match('^.+?_MKT_.+?\.xml$', file.name)]
+
+        file_ids = [re.findall('^.+?_(.+?)_MKT_(.+?)\.xml$', file.name)[0]
+                    for file in mkt_matches]
+
+        ca_matches = [file for match in file_ids 
+                      for file in CA_DIR 
+                      if re.match(f'^.+?_{match[0]}_CA_{int(match[1])+1}\.xml$', file.name)]
+
         files = MISOInvoice._from_list(list(zip(mkt_matches, ca_matches)))
 
         if move:
@@ -81,51 +88,57 @@ class MISOInvoice(Invoice):
 
 class PJMInvoice(Invoice):
     def __init__(self, *args) -> None:
-        ROOT = ElementTree.parse(MKT_FILE).getroot()
+        ROOTS = [ElementTree.parse(file).getroot() for file in args]
 
-        delta = relativedelta(days=7)
-        fund = ROOT.findtext('.//CUSTOMER_ACCOUNT')
-        end_date = ROOT.findtext('.//BILLING_PERIOD_END_DATE')
+        fund = ROOTS[0].findtext('.//CUSTOMER_ACCOUNT')
+        end_date = ROOTS[0].findtext('.//BILLING_PERIOD_END_DATE')
 
-        amt = ROOT.findtext('.//TOTAL_DUE_RECEIVABLE')
+        names = [re.match('^(.+?)_', file.name).group(1) for file in args]
+        amts = [root.findtext('.//TOTAL_DUE_RECEIVABLE') for root in ROOTS]
 
         self.fund = fund
-        self.date = datetime.strptime(end_date, '%m/%d/%Y') - delta
-        self.revenue = float(amt.replace(',', ''))
+        self.names = names
+        self.date = datetime.strptime(end_date, '%m/%d/%Y')
+        self.amts = amts
 
     @staticmethod
-    def _from_list(files: List[tuple]) -> List:
+    def _from_list(files: List[Iterable]) -> List:
         return [PJMInvoice(*group) for group in files]
 
     @staticmethod
     def from_dir(base: Path, move=False) -> None:
-        DIR = list((base / 'downloads').rglob('*.xml'))
+        DIR = list((base / 'download').rglob('*.xml'))
 
-        matches = [file for file in DIR if re.match('')]
-        file_ids = set([re.findall()])
+        file_ids = list(set([re.findall('^(.+?).+?CSV_O_(\d{4}-\d{2}-\d{2}).+?\.xml', file.name)[0]
+                             for file in DIR]))
 
+        files = [[file for file in DIR if re.match(f'^{match[0]}.+?{match[1]}')]
+                 for match in file_ids]
+        
+        def sort_key(x):
+            key = re.match('^(.+?)_', x).group(1)[-1]
+            return int(key) if key.isnumeric() else 0
 
-
-class Settlement(ParsedXML):
-    @staticmethod
-    def _from_list(files: List, market: str) -> List[ParsedXML.S]:
-        if market == 'miso':
-            return [MISOSettlement(file) for file in files]
-        else:
-            raise NotImplementedError(f"Settlement parser for market '{market}' not implemented")
-
-    @staticmethod
-    def from_dir(base: Path, market: str, move=False) -> List[ParsedXML.I]:
-        DIR = list((base / 'downloads').rglob('*.zip'))
-        files = Settlement._from_list(DIR, market)
+        files = [sorted(l, key=sort_key) for l in files]
 
         if move:
             PROCESSED_DIR = (base / 'processed')
             PROCESSED_DIR.mkdir(exist_ok=True)
             for file in DIR:
+                pdf = Path(file.parent / f'{file.stem}.pdf')
+                pdf.rename(PROCESSED_DIR / pdf.name)
                 file.rename(PROCESSED_DIR / file.name)
 
-        return files
+        return PJMInvoice._from_list(files)
+
+
+class Settlement(ParsedXML):
+    @staticmethod
+    def from_dir(base: Path, market: str, move=False) -> List[ParsedXML.S]:
+        if market == 'miso':
+            return MISOSettlement.from_dir(base, move=move)
+        else:
+            raise NotImplementedError(f"Settlement parser for market '{market}' not implemented")
 
 class MISOSettlement(Settlement):
     def __init__(self, zipfile: Path) -> None:
@@ -152,3 +165,20 @@ class MISOSettlement(Settlement):
         self.ao_amounts = {name.text: float(amount.text) for name, amount in zip(ao_names, ao_amounts)}
         self.ao_amounts["Other Amount"] = sum([float(elem.text) for elem in ao_all]) - sum(self.ao_amounts.values())
         self.ftr_amounts = {name.text: float(amount.text) for name, amount in zip(ftr_names, ftr_amounts)}
+
+    @staticmethod
+    def _from_list(files: List) -> List[ParsedXML.S]:
+        return [MISOSettlement(file) for file in files]
+
+    @staticmethod
+    def from_dir(base: Path, move=False) -> List[ParsedXML.S]:
+        DIR = list((base / 'downloads').rglob('*.zip'))
+        files = MISOSettlement._from_list(DIR)
+
+        if move:
+            PROCESSED_DIR = (base / 'processed')
+            PROCESSED_DIR.mkdir(exist_ok=True)
+            for file in DIR:
+                file.rename(PROCESSED_DIR / file.name)
+
+        return files
