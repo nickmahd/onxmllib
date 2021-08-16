@@ -4,7 +4,7 @@ import re
 from abc import ABC, abstractmethod, abstractstaticmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, List, Tuple, TypeVar
+from typing import Iterable, List, TypeVar
 from xml.etree import ElementTree
 from zipfile import ZipFile
 
@@ -16,11 +16,11 @@ class ParsedXML(ABC):
     S = TypeVar(name='S', bound='Settlement')
     
     @abstractmethod
-    def __init__(self) -> None:
+    def __init__() -> None:
         pass
 
     @abstractstaticmethod
-    def _from_list():
+    def from_list():
         pass
 
     @abstractstaticmethod
@@ -29,6 +29,11 @@ class ParsedXML(ABC):
 
 
 class Invoice(ParsedXML):
+    @classmethod
+    def from_list(cls, files: List[Iterable]) -> List[ParsedXML.I]:
+        file_list = [cls(*group) for group in files]
+        return sorted(file_list, key=lambda x: x.month)
+
     @staticmethod
     def from_dir(base: Path, market: str, move=False) -> List[ParsedXML.I]:
         if market == 'miso':
@@ -44,11 +49,11 @@ class MISOInvoice(Invoice):
         CA_ROOT = ElementTree.parse(CA_FILE).getroot()
 
         delta = relativedelta(days=7)
-        fund = MKT_ROOT.findtext('../Mrkt_Participant_NmAddr')
-        end_date = MKT_ROOT.findtext('../Billing_Prd_End_Dte')
+        fund = MKT_ROOT.findtext('.//Mrkt_Participant_NmAddr')
+        end_date = MKT_ROOT.findtext('.//Billing_Prd_End_Dte')
 
-        mkt_amt = MKT_ROOT.findtext('../Tot_Net_Chg_Rev_Amt')
-        ca_amt = CA_ROOT.findtext('../Tot_Net_Chg_Rev_Amt')
+        mkt_amt = MKT_ROOT.findtext('.//Tot_Net_Chg_Rev_Amt')
+        ca_amt = CA_ROOT.findtext('.//Tot_Net_Chg_Rev_Amt')
 
         self.fund = fund
         self.date = datetime.strptime(end_date, '%m/%d/%Y') - delta
@@ -56,83 +61,89 @@ class MISOInvoice(Invoice):
         self.fees = float(ca_amt.replace(',', ''))
 
     @staticmethod
-    def _from_list(files: List[Iterable]) -> List:
-        return [MISOInvoice(*pair) for pair in files]
-
-    @staticmethod
-    def from_dir(base: Path, move=False) -> None:
-        MKT_DIR = list((base / 'MKT').glob('*'))
-        CA_DIR = list((base / 'CA').glob('*'))
+    def from_dir(base: Path, move=False) -> List[ParsedXML.I]:
+        PATH = base / 'download'
+        MKT_DIR = list((PATH / 'MKT').glob('*'))
+        CA_DIR = list((PATH / 'CA').glob('*'))
 
         mkt_matches = [file for file in MKT_DIR
                        if re.match('^.+?_MKT_.+?\.xml$', file.name)]
 
-        file_ids = [re.findall('^.+?_(.+?)_MKT_(.+?)\.xml$', file.name)[0]
+        file_ids = [re.findall('^(\d{4}-\d{2}-\d{2})_([A-Z]+)_MKT_.+?\.xml$', file.name)[0]
                     for file in mkt_matches]
 
         ca_matches = [file for match in file_ids 
                       for file in CA_DIR 
-                      if re.match(f'^.+?_{match[0]}_CA_{int(match[1])+1}\.xml$', file.name)]
+                      if re.match(f'^{match[0]}_{match[1]}_CA_.+?\.xml$', file.name)]
 
-        files = MISOInvoice._from_list(list(zip(mkt_matches, ca_matches)))
+        files = MISOInvoice.from_list(list(zip(mkt_matches, ca_matches)))
+
+        if move:
+            for file in mkt_matches + ca_matches:
+                file_new = Path(*('processed' if part == 'download' else part
+                                  for part in file.parts))
+                file_new.parent.mkdir(parents=True, exist_ok=True)
+                file.rename(file_new)
+
+                pdf = Path(file.parent / f'{file.stem}.pdf')
+                pdf_new = Path(*('processed' if part == 'download' else part
+                                 for part in pdf.parts))
+                pdf.rename(pdf_new)
+
+        return files
+
+class PJMInvoice(Invoice):
+    def __init__(self, *group) -> None:
+        ROOTS = [ElementTree.parse(file).getroot() for file in group]
+
+        fund = ROOTS[0].findtext('.//CUSTOMER_ACCOUNT')
+        end_date = ROOTS[0].findtext('.//BILLING_PERIOD_END_DATE')
+
+        names = [re.match('^(.+?)_', file.name).group(1) for file in group]
+        amts = [root.findtext('.//TOTAL_DUE_RECEIVABLE') for root in ROOTS]
+
+        self.fund = fund
+        self.names = names
+        self.date = datetime.strptime(end_date, '%Y-%m-%d') if end_date else None
+        self.amts = amts
+
+    @staticmethod
+    def _sort_subgroup(x) -> int:
+        key = re.match('^(.+?)_', x.name).group(1)[-1]
+        return int(key) if key.isnumeric() else 0
+
+    @staticmethod
+    def from_dir(base: Path, move=False) -> None:
+        PATH = base / 'download'
+        DIR = list(PATH.glob('*.xml'))
+
+        file_ids = set([re.findall('^(.{3}).+?_(\d{6}_\d{6}).+?\.xml', file.name)[0]
+                        for file in DIR])
+
+        groups = [[file for file in DIR if re.match(f'^{match[0]}.+?_{match[1]}', file.name)]
+                   for match in file_ids]
+
+        sorted_groups = [sorted(l, key=PJMInvoice._sort_subgroup) for l in groups]
+        files = PJMInvoice.from_list(sorted_groups)
 
         if move:
             PROCESSED_DIR = (base / 'processed')
-            PROCESSED_DIR.mkdir(exist_ok=True)
-            for file in mkt_matches + ca_matches:
-                pdf = Path(file.parent / f'{file.stem}.pdf')
+            PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+            for file in DIR:
+                pdf_name = re.match('^(.+?WEKBILL)CSV', file.name).group(1)
+                pdf = next(PATH.glob(f'{pdf_name}PDF*.pdf'))
+                
                 pdf.rename(PROCESSED_DIR / pdf.name)
                 file.rename(PROCESSED_DIR / file.name)
 
         return files
 
-class PJMInvoice(Invoice):
-    def __init__(self, *args) -> None:
-        ROOTS = [ElementTree.parse(file).getroot() for file in args]
-
-        fund = ROOTS[0].findtext('.//CUSTOMER_ACCOUNT')
-        end_date = ROOTS[0].findtext('.//BILLING_PERIOD_END_DATE')
-
-        names = [re.match('^(.+?)_', file.name).group(1) for file in args]
-        amts = [root.findtext('.//TOTAL_DUE_RECEIVABLE') for root in ROOTS]
-
-        self.fund = fund
-        self.names = names
-        self.date = datetime.strptime(end_date, '%m/%d/%Y')
-        self.amts = amts
-
-    @staticmethod
-    def _from_list(files: List[Iterable]) -> List:
-        return [PJMInvoice(*group) for group in files]
-
-    @staticmethod
-    def from_dir(base: Path, move=False) -> None:
-        DIR = list((base / 'download').rglob('*.xml'))
-
-        file_ids = list(set([re.findall('^(.+?).+?CSV_O_(\d{4}-\d{2}-\d{2}).+?\.xml', file.name)[0]
-                             for file in DIR]))
-
-        files = [[file for file in DIR if re.match(f'^{match[0]}.+?{match[1]}')]
-                 for match in file_ids]
-        
-        def sort_key(x):
-            key = re.match('^(.+?)_', x).group(1)[-1]
-            return int(key) if key.isnumeric() else 0
-
-        files = [sorted(l, key=sort_key) for l in files]
-
-        if move:
-            PROCESSED_DIR = (base / 'processed')
-            PROCESSED_DIR.mkdir(exist_ok=True)
-            for file in DIR:
-                pdf = Path(file.parent / f'{file.stem}.pdf')
-                pdf.rename(PROCESSED_DIR / pdf.name)
-                file.rename(PROCESSED_DIR / file.name)
-
-        return PJMInvoice._from_list(files)
-
 
 class Settlement(ParsedXML):
+    @classmethod
+    def _from_list(cls, files: List) -> List[ParsedXML.S]:
+        return [cls(file) for file in files]
+
     @staticmethod
     def from_dir(base: Path, market: str, move=False) -> List[ParsedXML.S]:
         if market == 'miso':
@@ -167,18 +178,15 @@ class MISOSettlement(Settlement):
         self.ftr_amounts = {name.text: float(amount.text) for name, amount in zip(ftr_names, ftr_amounts)}
 
     @staticmethod
-    def _from_list(files: List) -> List[ParsedXML.S]:
-        return [MISOSettlement(file) for file in files]
-
-    @staticmethod
     def from_dir(base: Path, move=False) -> List[ParsedXML.S]:
         DIR = list((base / 'downloads').rglob('*.zip'))
-        files = MISOSettlement._from_list(DIR)
+        files = MISOSettlement.from_list(DIR)
 
         if move:
-            PROCESSED_DIR = (base / 'processed')
-            PROCESSED_DIR.mkdir(exist_ok=True)
             for file in DIR:
-                file.rename(PROCESSED_DIR / file.name)
+                file_new = Path(*('processed' if part == 'downloads' else part
+                                    for part in file.parts))
+                file_new.parent.mkdir(parents=True, exist_ok=True)
+                file.rename(file_new)
 
         return files

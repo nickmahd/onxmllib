@@ -41,8 +41,7 @@ from openpyxl.cell.cell import Cell
 from openpyxl.formula.translate import Translator
 from openpyxl.worksheet.worksheet import Worksheet
 
-from parsers import (Invoice, MISOInvoice, PJMInvoice,
-                     Settlement, MISOSettlement)
+from parsers import Invoice, Settlement
 
 
 S = TypeVar(name='S', bound='SheetHandler')
@@ -59,13 +58,13 @@ class SheetHandler(ABC):
     It also lays the groundwork for the file-sheet interface formalized in
     its subclasses.
     """
-    def __init__(self, path: Path, templates: Dict[str, Worksheet]) -> None:
+    def __init__(self, path: Path, template: Workbook) -> None:
         self.path = path
         self.path.mkdir(parents=True, exist_ok=True)
         """The directory to contain all related workbooks."""
 
-        self.templates = templates
-        """<dict> with maps between market names and template worksheets."""
+        self.template = template
+        """Workbook with named template worksheets."""
 
         self.modified: Dict[Path, Workbook] = {}
         """An index for repeated access to an already-loaded spreadsheet."""
@@ -103,6 +102,9 @@ class SheetHandler(ABC):
         elif date.month == 12:
             years.append(date.year + 1)
         return years
+
+    def _get_template(self, key: str) -> Worksheet:
+        return self.template[key]
 
     def _set_workbook(self, name) -> None:
         """
@@ -161,9 +163,7 @@ class SheetHandler(ABC):
         """
         Sets a cell index to any value.
         """
-        cell = self.worksheet.cell(row, col)
-        if not cell.value:
-            cell.value = value
+        self.worksheet.cell(row, col).value = value
 
     def _fill_template(self, row: int, template: Worksheet) -> None:
         """
@@ -225,9 +225,6 @@ class InvoiceHandler(SheetHandler):
             col += 1  # Extra column for the last (incomplete) week
         return col
 
-    def _get_template(self, market: str) -> Worksheet:
-        return self.templates[market]
-
     def _get_month_row(self, date: datetime) -> Optional[int]:
         """
         Invoice entries are separated by month; search for the proper section
@@ -245,7 +242,7 @@ class InvoiceHandler(SheetHandler):
         """
         row = self.worksheet.max_row + int(self.worksheet.max_row > 1)
         self._fill_template(row, template)
-        self.worksheet.cell(row, 2).value = date.strftime('%B')
+        self._set_cell(row, 2, date.strftime('%B'))
         return row
 
     def _fill_column(self, head: int, col: int,
@@ -280,14 +277,14 @@ class InvoiceHandler(SheetHandler):
                 if not row:
                     row = self._paste(invoice.date, self._get_template(market))
 
-                self._fill_miso_column(row, col, invoice, market)
+                self._fill_column(row, col, invoice, market)
 
                 last_month = invoice.date - relativedelta(months=1)
                 prev_row = self._get_month_row(last_month)
                 if col == 2 and prev_row:
                     """If the invoice is the first week of the month, fill it in
                     the previous month (if an entry exists)."""
-                    self._fill_miso_column(prev_row, col, invoice, market)
+                    self._fill_column(prev_row, col, invoice, market)
 
         elif market == 'pjm':
             for year in self._get_adjacent_years(invoice.date):
@@ -297,11 +294,18 @@ class InvoiceHandler(SheetHandler):
                 row = self._get_month_row(invoice.date)
                 col = self._date_to_col(invoice.date)
                 if not row:
-                    row = self._paste(invoice.date, self._get_template(market))
-                    for i, name in enumerate(invoice.names, start=3):
-                        self._set_cell(row+i, col, name)
+                    t = self._get_template(market)
+                    template = self.template.copy_worksheet(t)
+                    template.insert_rows(4, len(invoice.names) - 1)
+                    temp_row = template[3 + len(invoice.names)]
 
-                self._fill_pjm_column(row, col, invoice, market)
+                    for i, name in enumerate(invoice.names, start=4):
+                        for c in range(1, template.max_column + 1):
+                            self._copy_cell(template.cell(i, c), temp_row[c-1])
+                        template.cell(i, 1).value = name
+                    row = self._paste(invoice.date, template)
+
+                self._fill_column(row, col, invoice, market)
 
     def process_dir(self, input: Path, market: str, move=False) -> None:
         """
@@ -317,8 +321,8 @@ class SettlementHandler(SheetHandler):
     def _date_to_col(date: datetime) -> int:
         return date.day + 1
 
-    def _paste(self, doctype: str) -> None:
-        self._fill_template(1, self.templates[doctype])
+    def _paste(self, template: Worksheet) -> None:
+        self._fill_template(1, template)
 
     def _fill_column(self, col: int, amounts: Dict[str, float]) -> None:
         for name, val in amounts.items():
@@ -328,21 +332,21 @@ class SettlementHandler(SheetHandler):
                 self._set_cell(row, 1, name)
             self._set_cell(row, col, val)
 
-    def fill_summary(self, settlement: MISOSettlement) -> None:
+    def fill_summary(self, settlement: Settlement) -> None:
         for year in self._get_adjacent_years(settlement.date):
             self._set_workbook(f'{settlement.fund} Summary {year}.xlsx')
             if not self._set_sheet(settlement.date.strftime('%B')):
-                self._paste('summary')
+                self._paste(self._get_template('summary'))
 
             col = self._date_to_col(settlement.date)
 
             self._fill_column(col, settlement.ao_amounts)
 
-    def fill_ftr(self, settlement: MISOSettlement) -> None:
+    def fill_ftr(self, settlement: Settlement) -> None:
         for year in self._get_adjacent_years(settlement.date):
             self._set_workbook(f'{settlement.fund} FTR {year}.xlsx')
             if not self._set_sheet(settlement.date.strftime('%B')):
-                self._paste('ftr')
+                self._paste(self._get_template('ftr'))
 
             col = self._date_to_col(settlement.date)
 
