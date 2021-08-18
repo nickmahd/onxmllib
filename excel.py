@@ -103,9 +103,6 @@ class SheetHandler(ABC):
             years.append(date.year + 1)
         return years
 
-    def _get_template(self, key: str) -> Worksheet:
-        return self.template[key]
-
     def _set_workbook(self, name) -> None:
         """
         Loads a workbook only if it hasn't been loaded yet.
@@ -234,15 +231,32 @@ class InvoiceHandler(SheetHandler):
         row = self._search(month, 2)
         return row
 
-    def _paste(self, date: datetime, template: Worksheet) -> int:
+    def _paste(self, market: str, invoice: Invoice) -> int:
         """
         Create a new section with the given month name below the lowest entry.
 
         XXX: doesn't automatically sort jan-dec
         """
         row = self.worksheet.max_row + int(self.worksheet.max_row > 1)
+
+        t = self.template[market]
+        template = self.template.copy_worksheet(t)
+
+        name = f"{market.upper()} {invoice.fund.split()[0]} Weekly"
+        template.cell(row, 1).value = name
+        template.cell(row, 2).value = invoice.date.strftime('%B')
+
+        if market == 'pjm':
+            template.insert_rows(4, len(invoice.names) - 1)
+            temp_row = template[3 + len(invoice.names)]
+
+            for i, name in enumerate(invoice.names, start=4):
+                for c in range(1, template.max_column + 1):
+                    self._copy_cell(template.cell(i, c), temp_row[c-1])
+                    template.cell(i, c).number_format = '#,##0.00'
+                template.cell(i, 1).value = name
+        
         self._fill_template(row, template)
-        self._set_cell(row, 2, date.strftime('%B'))
         return row
 
     def _fill_column(self, head: int, col: int,
@@ -267,18 +281,18 @@ class InvoiceHandler(SheetHandler):
         MISO splits the last week of the month, so the last week of each month
         is also added to the last column of the prior month.
         """
-        if market == 'miso':
-            for year in self._get_adjacent_years(invoice.date):
-                self._set_workbook(f'{year}.xlsx')
-                self._set_sheet(invoice.fund)
+        for year in self._get_adjacent_years(invoice.date):
+            self._set_workbook(f'{year}.xlsx')
+            self._set_sheet(invoice.fund)
 
-                row = self._get_month_row(invoice.date)
-                col = self._date_to_col(invoice.date)
-                if not row:
-                    row = self._paste(invoice.date, self._get_template(market))
+            row = self._get_month_row(invoice.date)
+            col = self._date_to_col(invoice.date)
+            if not row:
+                row = self._paste(market, invoice)
 
-                self._fill_column(row, col, invoice, market)
+            self._fill_column(row, col, invoice, market)
 
+            if market == 'miso':
                 last_month = invoice.date - relativedelta(months=1)
                 prev_row = self._get_month_row(last_month)
                 if col == 2 and prev_row:
@@ -286,26 +300,6 @@ class InvoiceHandler(SheetHandler):
                     the previous month (if an entry exists)."""
                     self._fill_column(prev_row, col, invoice, market)
 
-        elif market == 'pjm':
-            for year in self._get_adjacent_years(invoice.date):
-                self._set_workbook(f'{year}.xlsx')
-                self._set_sheet(invoice.fund)
-
-                row = self._get_month_row(invoice.date)
-                col = self._date_to_col(invoice.date)
-                if not row:
-                    t = self._get_template(market)
-                    template = self.template.copy_worksheet(t)
-                    template.insert_rows(4, len(invoice.names) - 1)
-                    temp_row = template[3 + len(invoice.names)]
-
-                    for i, name in enumerate(invoice.names, start=4):
-                        for c in range(1, template.max_column + 1):
-                            self._copy_cell(template.cell(i, c), temp_row[c-1])
-                        template.cell(i, 1).value = name
-                    row = self._paste(invoice.date, template)
-
-                self._fill_column(row, col, invoice, market)
 
     def process_dir(self, input: Path, market: str, move=False) -> None:
         """
@@ -321,39 +315,31 @@ class SettlementHandler(SheetHandler):
     def _date_to_col(date: datetime) -> int:
         return date.day + 1
 
-    def _paste(self, template: Worksheet) -> None:
-        self._fill_template(1, template)
+    def _paste(self, filltype: str) -> None:
+        self._fill_template(1, self.template[filltype])
 
-    def _fill_column(self, col: int, amounts: Dict[str, float]) -> None:
-        for name, val in amounts.items():
+    def _fill_column(self, col: int, settlement: Settlement, key: str) -> None:
+        self._set_cell(1, col, settlement.date)
+        amts = settlement.amounts[key]
+        for name, val in amts.items():
             row = self._search(name, 1)
             if not row:
                 row = self.worksheet.max_row + 1
                 self._set_cell(row, 1, name)
             self._set_cell(row, col, val)
 
-    def fill_summary(self, settlement: Settlement) -> None:
+    def fill(self, settlement: Settlement, fill: str) -> None:
         for year in self._get_adjacent_years(settlement.date):
-            self._set_workbook(f'{settlement.fund} Summary {year}.xlsx')
+            self._set_workbook(f'{settlement.fund} {fill} {year}.xlsx')
             if not self._set_sheet(settlement.date.strftime('%B')):
-                self._paste(self._get_template('summary'))
+                self._paste(fill)
 
             col = self._date_to_col(settlement.date)
 
-            self._fill_column(col, settlement.ao_amounts)
-
-    def fill_ftr(self, settlement: Settlement) -> None:
-        for year in self._get_adjacent_years(settlement.date):
-            self._set_workbook(f'{settlement.fund} FTR {year}.xlsx')
-            if not self._set_sheet(settlement.date.strftime('%B')):
-                self._paste(self._get_template('ftr'))
-
-            col = self._date_to_col(settlement.date)
-
-            self._fill_column(col, settlement.ftr_amounts)
+            self._fill_column(col, settlement, key=fill)
 
     def process_dir(self, input: Path, market: str, move=False) -> None:
         files = Settlement.from_dir(input, market, move)
         for file in files:
-            self.fill_summary(file)
-            self.fill_ftr(file)
+            self.fill(file, 'Summary')
+            self.fill(file, 'FTR')

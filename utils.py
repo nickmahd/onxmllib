@@ -2,6 +2,9 @@ import smtplib
 from argparse import ArgumentParser, Namespace
 from email.message import EmailMessage
 from pathlib import Path
+from typing import Union
+
+from excel import SheetHandler
 
 SCRIPT_DESC = "Takes a collection of invoices and sends to .xlsx"
 SCRIPT_USAGE = "script.py [-h] <invoice|settlement> [--output DIR] [--input DIR] [--template FILE] [--market {miso,pjm}] [--dryrun]"
@@ -22,6 +25,28 @@ def parse_args() -> Namespace:
     # parser.add_argument('--log', const=".", metavar="DIR", nargs='?', type=Path, help="send a log to directory")
 
     return parser.parse_args()
+
+def run(parsetype: str, output: Union[str, Path], input: Union[str, Path],
+        template: Union[str, Path], market: str, move: Union[str, bool]):
+    output = Path(output)
+    input = Path(input)
+    template = Path(template)
+    dryrun = bool(move)
+
+    handler = SheetHandler.get_handler(parsetype=parsetype,
+                                       path=output,
+                                       template=template)
+
+    handler.process_dir(input=input,
+                    market=market,
+                    move=dryrun)
+
+    handler.write()
+
+def from_cli(args: Namespace = None):
+    args = args or parse_args()
+    run(parsetype=args.parsetype, output=args.output, input=args.input,
+        template=args.template, market=args.market, move=args.dryrun)
 
 def email(message, to_email: str=TO_EMAIL, subject: str="<no subject>",
           from_email: str=FROM_EMAIL, server: str=SMTP_SERVER) -> None:

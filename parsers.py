@@ -32,7 +32,7 @@ class Invoice(ParsedXML):
     @classmethod
     def from_list(cls, files: List[Iterable]) -> List[ParsedXML.I]:
         file_list = [cls(*group) for group in files]
-        return sorted(file_list, key=lambda x: x.month)
+        return sorted(file_list, key=lambda x: x.date.month)
 
     @staticmethod
     def from_dir(base: Path, market: str, move=False) -> List[ParsedXML.I]:
@@ -67,14 +67,14 @@ class MISOInvoice(Invoice):
         CA_DIR = list((PATH / 'CA').glob('*'))
 
         mkt_matches = [file for file in MKT_DIR
-                       if re.match('^.+?_MKT_.+?\.xml$', file.name)]
+                       if re.match('.+?_MKT_.+?\.xml$', file.name)]
 
         file_ids = [re.findall('^(\d{4}-\d{2}-\d{2})_([A-Z]+)_MKT_.+?\.xml$', file.name)[0]
                     for file in mkt_matches]
 
         ca_matches = [file for match in file_ids 
                       for file in CA_DIR 
-                      if re.match(f'^{match[0]}_{match[1]}_CA_.+?\.xml$', file.name)]
+                      if re.match(f'{match[0]}_{match[1]}_CA_.+?\.xml$', file.name)]
 
         files = MISOInvoice.from_list(list(zip(mkt_matches, ca_matches)))
 
@@ -99,17 +99,17 @@ class PJMInvoice(Invoice):
         fund = ROOTS[0].findtext('.//CUSTOMER_ACCOUNT')
         end_date = ROOTS[0].findtext('.//BILLING_PERIOD_END_DATE')
 
-        names = [re.match('^(.+?)_', file.name).group(1) for file in group]
+        names = [re.match('(.+?)_', file.name).group(1) for file in group]
         amts = [root.findtext('.//TOTAL_DUE_RECEIVABLE') for root in ROOTS]
 
-        self.fund = fund
+        self.fund = fund #re.match('(.+?(?=\s\())', fund).group(1)
         self.names = names
         self.date = datetime.strptime(end_date, '%Y-%m-%d') if end_date else None
-        self.amts = amts
+        self.amts = [float(i) if i else None for i in amts]
 
     @staticmethod
     def _sort_subgroup(x) -> int:
-        key = re.match('^(.+?)_', x.name).group(1)[-1]
+        key = re.match('(.+?)_', x.name).group(1)[-1]
         return int(key) if key.isnumeric() else 0
 
     @staticmethod
@@ -120,7 +120,7 @@ class PJMInvoice(Invoice):
         file_ids = set([re.findall('^(.{3}).+?_(\d{6}_\d{6}).+?\.xml', file.name)[0]
                         for file in DIR])
 
-        groups = [[file for file in DIR if re.match(f'^{match[0]}.+?_{match[1]}', file.name)]
+        groups = [[file for file in DIR if re.match(f'{match[0]}.+?_{match[1]}', file.name)]
                    for match in file_ids]
 
         sorted_groups = [sorted(l, key=PJMInvoice._sort_subgroup) for l in groups]
@@ -130,7 +130,7 @@ class PJMInvoice(Invoice):
             PROCESSED_DIR = (base / 'processed')
             PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
             for file in DIR:
-                pdf_name = re.match('^(.+?WEKBILL)CSV', file.name).group(1)
+                pdf_name = re.match('(.+?WEKBILL)CSV', file.name).group(1)
                 pdf = next(PATH.glob(f'{pdf_name}PDF*.pdf'))
                 
                 pdf.rename(PROCESSED_DIR / pdf.name)
@@ -141,7 +141,7 @@ class PJMInvoice(Invoice):
 
 class Settlement(ParsedXML):
     @classmethod
-    def _from_list(cls, files: List) -> List[ParsedXML.S]:
+    def from_list(cls, files: List) -> List[ParsedXML.S]:
         return [cls(file) for file in files]
 
     @staticmethod
@@ -173,9 +173,12 @@ class MISOSettlement(Settlement):
         self.fund = fund
         self.date = datetime.strptime(end_date, '%m/%d/%Y')
 
-        self.ao_amounts = {name.text: float(amount.text) for name, amount in zip(ao_names, ao_amounts)}
-        self.ao_amounts["Other Amount"] = sum([float(elem.text) for elem in ao_all]) - sum(self.ao_amounts.values())
-        self.ftr_amounts = {name.text: float(amount.text) for name, amount in zip(ftr_names, ftr_amounts)}
+        print([x for x in ao_amounts if not isinstance(x, ElementTree.Element)])
+
+        self.amounts = {}
+        self.amounts['ao'] = {name.text: float(amount.text) for name, amount in zip(ao_names, ao_amounts)}
+        self.amounts['ao']["Other Amount"] = sum([float(elem.text) for elem in ao_all]) - sum(self.amounts['ao'].values())
+        self.amounts['ftr'] = {name.text: float(amount.text) for name, amount in zip(ftr_names, ftr_amounts)}
 
     @staticmethod
     def from_dir(base: Path, move=False) -> List[ParsedXML.S]:
@@ -185,7 +188,7 @@ class MISOSettlement(Settlement):
         if move:
             for file in DIR:
                 file_new = Path(*('processed' if part == 'downloads' else part
-                                    for part in file.parts))
+                                  for part in file.parts))
                 file_new.parent.mkdir(parents=True, exist_ok=True)
                 file.rename(file_new)
 
